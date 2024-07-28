@@ -161,6 +161,98 @@ export class PostgresSyncStore implements SyncStore {
     });
   };
 
+  insertLogFilterIntervalBatch = async ({
+    chainId,
+    logFilter,
+    data,
+    interval,
+  }: {
+    chainId: number;
+    logFilter: LogFilterCriteria;
+    data: (SyncBlock & {
+      transactions: SyncTransaction[];
+      transactionReceipts: SyncTransactionReceipt[];
+      logs: SyncLog[];
+    })[];
+    interval: { startBlock: bigint; endBlock: bigint };
+  }) => {
+    return this.db.wrap(
+      { method: "insertLogFilterIntervalBatch" },
+      async () => {
+        await this.db.transaction().execute(async (tx) => {
+          const blocks = data.map((blockData) => ({
+            ...rpcToPostgresBlock(blockData),
+            chainId,
+            checkpoint: this.createBlockCheckpoint(blockData, chainId),
+          }));
+
+          const transactions = data.flatMap((blockData) =>
+            blockData.transactions.map((transaction) => ({
+              ...rpcToPostgresTransaction(transaction),
+              chainId,
+            })),
+          );
+
+          const transactionReceipts = data.flatMap((blockData) =>
+            blockData.transactionReceipts.map((rpcTransactionReceipt) => ({
+              ...rpcToPostgresTransactionReceipt(rpcTransactionReceipt),
+              chainId,
+            })),
+          );
+
+          const logs = data.flatMap((blockData) =>
+            blockData.logs.map((rpcLog) => ({
+              ...rpcToPostgresLog(rpcLog),
+              chainId,
+              checkpoint: this.createLogCheckpoint(rpcLog, blockData, chainId),
+            })),
+          );
+
+          await tx
+            .insertInto("blocks")
+            .values(blocks)
+            .onConflict((oc) => oc.column("hash").doNothing())
+            .execute();
+
+          if (transactions.length > 0) {
+            await tx
+              .insertInto("transactions")
+              .values(transactions)
+              .onConflict((oc) => oc.column("hash").doNothing())
+              .execute();
+          }
+
+          if (transactionReceipts.length > 0) {
+            await tx
+              .insertInto("transactionReceipts")
+              .values(transactionReceipts)
+              .onConflict((oc) => oc.column("transactionHash").doNothing())
+              .execute();
+          }
+
+          if (logs.length > 0) {
+            await tx
+              .insertInto("logs")
+              .values(logs)
+              .onConflict((oc) =>
+                oc.column("id").doUpdateSet((eb) => ({
+                  checkpoint: eb.ref("excluded.checkpoint"),
+                })),
+              )
+              .execute();
+          }
+
+          await this._insertLogFilterInterval({
+            tx,
+            chainId,
+            logFilters: [logFilter],
+            interval,
+          });
+        });
+      },
+    );
+  };
+
   getLogFilterIntervals = async ({
     chainId,
     logFilter,

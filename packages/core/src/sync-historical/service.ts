@@ -1,5 +1,8 @@
+import fs from "node:fs/promises";
+import { BigQueryService } from "@/bigquery/service.js";
 import type { Common } from "@/common/common.js";
 import { getHistoricalSyncProgress } from "@/common/metrics.js";
+import type { BigQueryAcceleratorOptions, Options } from "@/common/options.js";
 import type { Network } from "@/config/networks.js";
 import type {
   BlockSource,
@@ -66,6 +69,13 @@ type LogFilterTask = {
   toBlock: number;
 };
 
+type LogFilterBigQueryTask = {
+  kind: "LOG_FILTER_BIGQUERY";
+  logFilter: LogSource;
+  fromBlock: number;
+  toBlock: number;
+};
+
 type FactoryLogFilterTask = {
   kind: "FACTORY_LOG_FILTER";
   factoryLogFilter: FactoryLogSource;
@@ -103,6 +113,7 @@ type BlockTask = {
 type HistoricalSyncTask =
   | FactoryChildAddressTask
   | LogFilterTask
+  | LogFilterBigQueryTask
   | FactoryLogFilterTask
   | TraceFilterTask
   | FactoryTraceFilterTask
@@ -154,6 +165,13 @@ export class HistoricalSyncService extends Emittery<HistoricalSyncEvents> {
   /** If true, failed tasks should not log errors or be retried. */
   private isShuttingDown = false;
   private progressLogInterval?: NodeJS.Timeout;
+  private bigQueryService: BigQueryService | undefined;
+  private debouncedEmitCheckpoint = debounce(
+    HISTORICAL_CHECKPOINT_EMIT_INTERVAL,
+    (checkpoint: Checkpoint) => {
+      this.emit("historicalCheckpoint", checkpoint);
+    },
+  );
 
   constructor({
     common,
@@ -175,6 +193,19 @@ export class HistoricalSyncService extends Emittery<HistoricalSyncEvents> {
     this.network = network;
     this.requestQueue = requestQueue;
     this.sources = sources;
+
+    if (this.common.options.enableBigQueryAccelerator) {
+      this.bigQueryService = new BigQueryService(
+        (common.options as Options & BigQueryAcceleratorOptions)
+          .bigQueryProjectId,
+        (common.options as Options & BigQueryAcceleratorOptions)
+          .bigQueryTempDatasetId,
+        (common.options as Options & BigQueryAcceleratorOptions)
+          .bigQueryBucketName,
+        (common.options as Options & BigQueryAcceleratorOptions)
+          .bigQueryDirectory,
+      );
+    }
 
     this.queue = this.buildQueue();
   }
@@ -269,29 +300,50 @@ export class HistoricalSyncService extends Emittery<HistoricalSyncEvents> {
             const requiredLogFilterIntervals =
               logFilterProgressTracker.getRequired();
 
-            const logFilterTaskChunks = getChunks({
-              intervals: requiredLogFilterIntervals,
-              maxChunkSize:
-                source.maxBlockRange ?? this.network.defaultMaxBlockRange,
-            });
-
-            for (const [fromBlock, toBlock] of logFilterTaskChunks) {
-              this.queue.addTask(
-                {
-                  kind: "LOG_FILTER",
-                  logFilter: source,
-                  fromBlock,
-                  toBlock,
-                },
-                { priority: Number.MAX_SAFE_INTEGER - fromBlock },
-              );
-            }
-            if (logFilterTaskChunks.length > 0) {
-              const total = intervalSum(requiredLogFilterIntervals);
-              this.common.logger.debug({
-                service: "historical",
-                msg: `Added '${this.network.name}' LOG_FILTER tasks for '${source.contractName}' over a ${total} block range`,
+            if (this.bigQueryService?.isChainIdWhitelisted(source.chainId)) {
+              for (const [fromBlock, toBlock] of requiredLogFilterIntervals) {
+                this.queue.addTask(
+                  {
+                    kind: "LOG_FILTER_BIGQUERY",
+                    logFilter: source,
+                    fromBlock,
+                    toBlock,
+                  },
+                  { priority: Number.MAX_SAFE_INTEGER - fromBlock },
+                );
+              }
+              if (requiredLogFilterIntervals.length > 0) {
+                const total = intervalSum(requiredLogFilterIntervals);
+                this.common.logger.debug({
+                  service: "historical",
+                  msg: `Added '${this.network.name}' LOG_FILTER_BIGQUERY tasks for '${source.contractName}' over a ${total} block range`,
+                });
+              }
+            } else {
+              const logFilterTaskChunks = getChunks({
+                intervals: requiredLogFilterIntervals,
+                maxChunkSize:
+                  source.maxBlockRange ?? this.network.defaultMaxBlockRange,
               });
+
+              for (const [fromBlock, toBlock] of logFilterTaskChunks) {
+                this.queue.addTask(
+                  {
+                    kind: "LOG_FILTER",
+                    logFilter: source,
+                    fromBlock,
+                    toBlock,
+                  },
+                  { priority: Number.MAX_SAFE_INTEGER - fromBlock },
+                );
+              }
+              if (logFilterTaskChunks.length > 0) {
+                const total = intervalSum(requiredLogFilterIntervals);
+                this.common.logger.debug({
+                  service: "historical",
+                  msg: `Added '${this.network.name}' LOG_FILTER tasks for '${source.contractName}' over a ${total} block range`,
+                });
+              }
             }
 
             const targetBlockCount = endBlock - startBlock + 1;
@@ -858,6 +910,10 @@ export class HistoricalSyncService extends Emittery<HistoricalSyncEvents> {
           await this.logFilterTaskWorker(task);
           break;
         }
+        case "LOG_FILTER_BIGQUERY": {
+          await this.logFilterBigQueryTaskWorker(task);
+          break;
+        }
         case "FACTORY_LOG_FILTER": {
           await this.factoryLogFilterTaskWorker(task);
           break;
@@ -920,7 +976,8 @@ export class HistoricalSyncService extends Emittery<HistoricalSyncEvents> {
             queue.addTask({ ...task }, { priority });
             break;
           }
-          case "LOG_FILTER": {
+          case "LOG_FILTER":
+          case "LOG_FILTER_BIGQUERY": {
             this.common.logger.warn({
               service: "historical",
               msg: `Failed to sync '${this.network.name}' logs for '${task.logFilter.contractName}' from block ${task.fromBlock} to ${task.toBlock}`,
@@ -1075,6 +1132,84 @@ export class HistoricalSyncService extends Emittery<HistoricalSyncEvents> {
       service: "historical",
       msg: `Completed '${this.network.name}' LOG_FILTER task for '${logFilter.contractName}' from block ${fromBlock} to ${toBlock}`,
     });
+  };
+
+  private logFilterBigQueryTaskWorker = async ({
+    logFilter,
+    fromBlock,
+    toBlock,
+  }: LogFilterBigQueryTask) => {
+    this.common.logger.trace({
+      service: "historical",
+      msg: `Starting '${this.network.name}' LOG_FILTER_BIGQUERY task for '${logFilter.contractName}' from block ${fromBlock} to ${toBlock}`,
+    });
+
+    const startBlock = await _eth_getBlockByNumber(
+      { requestQueue: this.requestQueue },
+      { blockNumber: fromBlock },
+    );
+
+    const endBlock = await _eth_getBlockByNumber(
+      { requestQueue: this.requestQueue },
+      { blockNumber: toBlock - 1 },
+    );
+
+    const directory = await this.bigQueryService!.exportSourceToGCS(
+      logFilter,
+      startBlock,
+      endBlock,
+    );
+
+    if (!directory) {
+      this.common.logger.trace({
+        service: "historical",
+        msg: `Failed '${this.network.name}' LOG_FILTER_BIGQUERY task for '${logFilter.contractName}' from block ${fromBlock} to ${toBlock}`,
+      });
+    } else {
+      const files = await this.bigQueryService!.listFilesInDirectory(directory);
+
+      for (const file of files) {
+        await this.bigQueryService!.downloadFileFromGCS(
+          file,
+          `${this.common.options.ponderDir}/tmp/"${file}`,
+        );
+
+        // Open the JSON file and insert the logs into the store.
+        const data = await fs.readFile(
+          `${this.common.options.ponderDir}/tmp/"${file}`,
+          "utf8",
+        );
+
+        await this.syncStore.insertLogFilterIntervalBatch({
+          chainId: logFilter.chainId,
+          logFilter: logFilter.criteria,
+          data: JSON.parse(data),
+          interval: {
+            startBlock: BigInt(fromBlock),
+            endBlock: BigInt(toBlock),
+          },
+        });
+
+        this.common.metrics.ponder_historical_completed_blocks.inc(
+          {
+            network: this.network.name,
+            source: logFilter.contractName,
+            type: "log",
+          },
+          toBlock - fromBlock + 1,
+        );
+
+        this.logFilterProgressTrackers[logFilter.id]!.addCompletedInterval([
+          fromBlock,
+          toBlock,
+        ]);
+
+        this.common.logger.trace({
+          service: "historical",
+          msg: `Completed '${this.network.name}' LOG_FILTER_BIGQUERY task for '${logFilter.contractName}' from block ${fromBlock} to ${toBlock}`,
+        });
+      }
+    }
   };
 
   private factoryLogFilterTaskWorker = async ({
@@ -1854,11 +1989,4 @@ export class HistoricalSyncService extends Emittery<HistoricalSyncEvents> {
       this.blockTasksEnqueuedCheckpoint = blockTasksCanBeEnqueuedTo;
     }
   };
-
-  private debouncedEmitCheckpoint = debounce(
-    HISTORICAL_CHECKPOINT_EMIT_INTERVAL,
-    (checkpoint: Checkpoint) => {
-      this.emit("historicalCheckpoint", checkpoint);
-    },
-  );
 }

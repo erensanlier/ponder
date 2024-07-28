@@ -3,7 +3,7 @@ import path from "node:path";
 import type { CliOptions } from "@/bin/ponder.js";
 import type { LevelWithSilent } from "pino";
 
-export type Options = {
+type BaseOptions = {
   command: "dev" | "start" | "serve" | "codegen";
 
   configFile: string;
@@ -36,7 +36,21 @@ export type Options = {
 
   syncStoreMaxIntervals: number;
   syncEventsQuerySize: number;
+
+  enableBigQueryAccelerator?: boolean;
 };
+
+export type BigQueryAcceleratorOptions = {
+  bigQueryProjectId: string;
+  bigQueryTempDatasetId: string;
+  bigQueryBucketName: string;
+  bigQueryDirectory: string;
+};
+
+export type Options = BaseOptions &
+  (BaseOptions["enableBigQueryAccelerator"] extends true
+    ? BigQueryAcceleratorOptions
+    : {});
 
 export const buildOptions = ({ cliOptions }: { cliOptions: CliOptions }) => {
   let rootDir: string;

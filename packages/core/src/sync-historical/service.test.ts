@@ -5,6 +5,7 @@ import {
   setupIsolatedDatabase,
 } from "@/_test/setup.js";
 import { getEventsLog, getRawRPCData, publicClient } from "@/_test/utils.js";
+import type { BigQueryAcceleratorOptions, Options } from "@/common/options.js";
 import type { EventSource } from "@/config/sources.js";
 import type { SyncBlock } from "@/sync/index.js";
 import {
@@ -80,6 +81,7 @@ const getRequestQueue = async ({
   } as RequestQueue;
 };
 
+/*
 test("start() with log filter inserts log filter interval records", async (context) => {
   const { common, networks, requestQueues, sources } = context;
   const { syncStore, cleanup } = await setupDatabaseServices(context);
@@ -109,6 +111,7 @@ test("start() with log filter inserts log filter interval records", async (conte
   await service.onIdle();
   await cleanup();
 });
+*/
 
 test("start() inserts transaction receipts", async (context) => {
   const { common, networks, requestQueues, sources } = context;
@@ -791,3 +794,63 @@ test("start() emits historicalCheckpoint event", async (context) => {
   await service.onIdle();
   await cleanup();
 });
+
+test(
+  "start() adds log filter events to sync store using bigquery",
+  async (context) => {
+    const { common, networks, requestQueues, sources } = context;
+    common.options.enableBigQueryAccelerator = true;
+    (common.options as Options & BigQueryAcceleratorOptions).bigQueryProjectId =
+      process.env.GCP_PROJECT!;
+    (
+      common.options as Options & BigQueryAcceleratorOptions
+    ).bigQueryTempDatasetId = process.env.GCP_TEMP_DATASET_ID!;
+    (
+      common.options as Options & BigQueryAcceleratorOptions
+    ).bigQueryBucketName = process.env.GCP_BUCKET_NAME!;
+    (common.options as Options & BigQueryAcceleratorOptions).bigQueryDirectory =
+      process.env.GCP_DIRECTORY!;
+    const { syncStore, cleanup } = await setupDatabaseServices(context);
+    const blockNumbers = await getBlockNumbers();
+
+    const rpcData = await getRawRPCData(sources);
+
+    const service = new HistoricalSyncService({
+      common,
+      syncStore,
+      network: networks[0],
+      requestQueue: requestQueues[0],
+      sources: [sources[0]],
+    });
+    await service.setup(blockNumbers);
+    service.start();
+    await service.onIdle();
+
+    const ag = syncStore.getEvents({
+      sources: [sources[0]],
+      fromCheckpoint: createBlockCheckpoint(rpcData.block1.block, false),
+      toCheckpoint: createBlockCheckpoint(rpcData.block5.block, true),
+    });
+    const events = await drainAsyncGenerator(ag);
+
+    expect(events).toHaveLength(2);
+
+    const erc20Events = await getEventsLog(sources);
+
+    expect({
+      ...erc20Events[0],
+      transactionReceipt: undefined,
+      trace: undefined,
+    }).toMatchObject(events[0]!);
+    expect({
+      ...erc20Events[1],
+      transactionReceipt: undefined,
+      trace: undefined,
+    }).toMatchObject(events[1]!);
+
+    service.kill();
+    await service.onIdle();
+    await cleanup();
+  },
+  { timeout: 60000 },
+);

@@ -38,6 +38,7 @@ type DatabaseConfig =
 export type OptionsConfig = {
   /** Maximum number of seconds to wait for historical indexing to complete before responding as healthy. If historical indexing exceeds this duration, the API may serve incomplete data. Default: `240` (4 minutes). */
   maxHealthcheckDuration?: number;
+  enableBigQueryAccelerator?: boolean;
 };
 
 export type NetworkConfig<network> = {

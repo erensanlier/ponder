@@ -59,6 +59,23 @@ export interface SyncStore {
   }): Promise<void>;
 
   /**
+   * Insert a list of logs & associated transactions matching a given log filter
+   * within a specific block. Also insert the log interval recording the eth_getLogs
+   * request that was made and returned this result.
+   * This method is used for batch inserts.
+   */
+  insertLogFilterIntervalBatch(options: {
+    chainId: number;
+    logFilter: LogFilterCriteria;
+    data: (SyncBlock & {
+      transactions: SyncTransaction[];
+      transactionReceipts: SyncTransactionReceipt[];
+      logs: SyncLog[];
+    })[];
+    interval: { startBlock: bigint; endBlock: bigint };
+  }): Promise<void>;
+
+  /**
    * Get all block intervals where logs (and associated blocks & transactions)
    * matching the specified log filter have already been inserted.
    */

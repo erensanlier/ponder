@@ -1,6 +1,6 @@
 import path from "node:path";
 import { BuildError } from "@/common/errors.js";
-import type { Options } from "@/common/options.js";
+import type { BigQueryAcceleratorOptions, Options } from "@/common/options.js";
 import {
   buildAbiEvents,
   buildAbiFunctions,
@@ -864,6 +864,35 @@ export async function buildConfigAndIndexingFunctions({
     logs.push({
       level: "info",
       msg: `Set max healthcheck duration to ${optionsConfig.maxHealthcheckDuration} seconds (from ponder.config.ts)`,
+    });
+  }
+  if (config.options?.enableBigQueryAccelerator) {
+    optionsConfig.enableBigQueryAccelerator = true;
+
+    if (
+      !process.env.GCP_PROJECT ||
+      !process.env.GCP_TEMP_DATASET_ID ||
+      !process.env.GCP_BUCKET_NAME ||
+      !process.env.GCP_DIRECTORY
+    ) {
+      throw new Error(
+        `Invalid BigQuery configuration: 'enableBigQueryAccelerator' is set to true but 'GCP_PROJECT', 'GCP_TEMP_DATASET_ID', 'GCP_BUCKET_NAME', or 'GCP_DIRECTORY' is not provided.`,
+      );
+    }
+
+    (optionsConfig as Options & BigQueryAcceleratorOptions).bigQueryProjectId =
+      process.env.GCP_PROJECT;
+    (
+      optionsConfig as Options & BigQueryAcceleratorOptions
+    ).bigQueryTempDatasetId = process.env.GCP_TEMP_DATASET_ID;
+    (optionsConfig as Options & BigQueryAcceleratorOptions).bigQueryBucketName =
+      process.env.GCP_BUCKET_NAME;
+    (optionsConfig as Options & BigQueryAcceleratorOptions).bigQueryDirectory =
+      process.env.GCP_DIRECTORY;
+
+    logs.push({
+      level: "info",
+      msg: `Enabled BigQuery accelerator for project '${process.env.GCP_PROJECT}' (from ponder.config.ts)`,
     });
   }
 
