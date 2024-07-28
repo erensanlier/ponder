@@ -1151,65 +1151,64 @@ export class HistoricalSyncService extends Emittery<HistoricalSyncEvents> {
 
     const endBlock = await _eth_getBlockByNumber(
       { requestQueue: this.requestQueue },
-      { blockNumber: toBlock - 1 },
+      { blockNumber: toBlock },
     );
 
-    const directory = await this.bigQueryService!.exportSourceToGCS(
+    const directory = await this.bigQueryService!.exportLogSourceToGCS(
       logFilter,
       startBlock,
       endBlock,
     );
 
     if (!directory) {
-      this.common.logger.trace({
-        service: "historical",
-        msg: `Failed '${this.network.name}' LOG_FILTER_BIGQUERY task for '${logFilter.contractName}' from block ${fromBlock} to ${toBlock}`,
-      });
-    } else {
-      const files = await this.bigQueryService!.listFilesInDirectory(directory);
-
-      for (const file of files) {
-        await this.bigQueryService!.downloadFileFromGCS(
-          file,
-          `${this.common.options.ponderDir}/tmp/"${file}`,
-        );
-
-        // Open the JSON file and insert the logs into the store.
-        const data = await fs.readFile(
-          `${this.common.options.ponderDir}/tmp/"${file}`,
-          "utf8",
-        );
-
-        await this.syncStore.insertLogFilterIntervalBatch({
-          chainId: logFilter.chainId,
-          logFilter: logFilter.criteria,
-          data: JSON.parse(data),
-          interval: {
-            startBlock: BigInt(fromBlock),
-            endBlock: BigInt(toBlock),
-          },
-        });
-
-        this.common.metrics.ponder_historical_completed_blocks.inc(
-          {
-            network: this.network.name,
-            source: logFilter.contractName,
-            type: "log",
-          },
-          toBlock - fromBlock + 1,
-        );
-
-        this.logFilterProgressTrackers[logFilter.id]!.addCompletedInterval([
-          fromBlock,
-          toBlock,
-        ]);
-
-        this.common.logger.trace({
-          service: "historical",
-          msg: `Completed '${this.network.name}' LOG_FILTER_BIGQUERY task for '${logFilter.contractName}' from block ${fromBlock} to ${toBlock}`,
-        });
-      }
+      throw new Error(
+        `Failed to export '${this.network.name}' logs for '${logFilter.contractName}' from block ${fromBlock} to ${toBlock}`,
+      );
     }
+    const files = await this.bigQueryService!.listFilesInDirectory(directory);
+
+    for (const file of files) {
+      await this.bigQueryService!.downloadFileFromGCS(
+        file,
+        `${this.common.options.ponderDir}/tmp/"${file}`,
+      );
+
+      // Open the JSON file and insert the logs into the store.
+      const data = await fs.readFile(
+        `${this.common.options.ponderDir}/tmp/"${file}`,
+        "utf8",
+      );
+
+      const all_data = JSON.parse(`[${data.trim().split(/\n/).join(",")}]`);
+
+      await this.syncStore.insertLogFilterIntervalBatch({
+        chainId: logFilter.chainId,
+        logFilter: logFilter.criteria,
+        data: all_data,
+        interval: {
+          startBlock: BigInt(fromBlock),
+          endBlock: BigInt(toBlock),
+        },
+      });
+    }
+    this.common.metrics.ponder_historical_completed_blocks.inc(
+      {
+        network: this.network.name,
+        source: logFilter.contractName,
+        type: "log",
+      },
+      toBlock - fromBlock + 1,
+    );
+
+    this.logFilterProgressTrackers[logFilter.id]!.addCompletedInterval([
+      fromBlock,
+      toBlock,
+    ]);
+
+    this.common.logger.trace({
+      service: "historical",
+      msg: `Completed '${this.network.name}' LOG_FILTER_BIGQUERY task for '${logFilter.contractName}' from block ${fromBlock} to ${toBlock}`,
+    });
   };
 
   private factoryLogFilterTaskWorker = async ({
