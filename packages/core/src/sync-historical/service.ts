@@ -1184,8 +1184,8 @@ export class HistoricalSyncService extends Emittery<HistoricalSyncEvents> {
         // Insert in batches to optimize memory usage
         if (dataBatch.length >= 1000) {
           // Log block numbers of first and last items in the batch
-          const firstBlockNumber = dataBatch[0].blockNumber;
-          const lastBlockNumber = dataBatch[dataBatch.length - 1].blockNumber;
+          const firstBlockNumber = dataBatch[0].number;
+          const lastBlockNumber = dataBatch[dataBatch.length - 1].number;
           this.common.logger.info({
             service: "historical",
             msg: `Inserting batch with first block number: ${firstBlockNumber}, last block number: ${lastBlockNumber}`,
@@ -1207,8 +1207,8 @@ export class HistoricalSyncService extends Emittery<HistoricalSyncEvents> {
       // Insert any remaining data
       if (dataBatch.length > 0) {
         // Log block numbers of first and last items in the batch
-        const firstBlockNumber = dataBatch[0].blockNumber;
-        const lastBlockNumber = dataBatch[dataBatch.length - 1].blockNumber;
+        const firstBlockNumber = dataBatch[0].number;
+        const lastBlockNumber = dataBatch[dataBatch.length - 1].number;
         this.common.logger.info({
           service: "historical",
           msg: `Inserting final batch with first block number: ${firstBlockNumber}, last block number: ${lastBlockNumber}`,
