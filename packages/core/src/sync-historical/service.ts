@@ -1,4 +1,4 @@
-import fs from "node:fs/promises";
+import * as fs from "node:fs";
 import { BigQueryService } from "@/bigquery/service.js";
 import type { Common } from "@/common/common.js";
 import { getHistoricalSyncProgress } from "@/common/metrics.js";
@@ -300,7 +300,7 @@ export class HistoricalSyncService extends Emittery<HistoricalSyncEvents> {
             const requiredLogFilterIntervals =
               logFilterProgressTracker.getRequired();
 
-            if (this.bigQueryService?.isChainIdWhitelisted(source.chainId)) {
+            if (this.bigQueryService?.sourceWhitelisted(source)) {
               for (const [fromBlock, toBlock] of requiredLogFilterIntervals) {
                 this.queue.addTask(
                   {
@@ -1174,7 +1174,7 @@ export class HistoricalSyncService extends Emittery<HistoricalSyncEvents> {
       );
 
       // Open the JSON file and insert the logs into the store.
-      const data = await fs.readFile(
+      const data = fs.readFileSync(
         `${this.common.options.ponderDir}/tmp/"${file}`,
         "utf8",
       );
