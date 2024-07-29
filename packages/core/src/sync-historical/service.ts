@@ -1,4 +1,5 @@
 import * as fs from "node:fs";
+import * as readline from "node:readline";
 import { BigQueryService } from "@/bigquery/service.js";
 import type { Common } from "@/common/common.js";
 import { getHistoricalSyncProgress } from "@/common/metrics.js";
@@ -1168,29 +1169,66 @@ export class HistoricalSyncService extends Emittery<HistoricalSyncEvents> {
     const files = await this.bigQueryService!.listFilesInDirectory(directory);
 
     for (const file of files) {
-      await this.bigQueryService!.downloadFileFromGCS(
-        file,
-        `${this.common.options.ponderDir}/tmp/"${file}`,
-      );
+      const localPath = `${this.common.options.ponderDir}/tmp/${file}`;
+      await this.bigQueryService!.downloadFileFromGCS(file, localPath);
 
-      // Open the JSON file and insert the logs into the store.
-      const data = fs.readFileSync(
-        `${this.common.options.ponderDir}/tmp/"${file}`,
-        "utf8",
-      );
+      // Process the file as a stream
+      const stream = fs.createReadStream(localPath, { encoding: "utf8" });
+      const rl = readline.createInterface({ input: stream });
 
-      const all_data = JSON.parse(`[${data.trim().split(/\n/).join(",")}]`);
+      const dataBatch: any[] = [];
+      for await (const line of rl) {
+        const data = JSON.parse(line);
+        dataBatch.push(data);
 
-      await this.syncStore.insertLogFilterIntervalBatch({
-        chainId: logFilter.chainId,
-        logFilter: logFilter.criteria,
-        data: all_data,
-        interval: {
-          startBlock: BigInt(fromBlock),
-          endBlock: BigInt(toBlock),
-        },
-      });
+        // Insert in batches to optimize memory usage
+        if (dataBatch.length >= 1000) {
+          // Log block numbers of first and last items in the batch
+          const firstBlockNumber = dataBatch[0].blockNumber;
+          const lastBlockNumber = dataBatch[dataBatch.length - 1].blockNumber;
+          this.common.logger.info({
+            service: "historical",
+            msg: `Inserting batch with first block number: ${firstBlockNumber}, last block number: ${lastBlockNumber}`,
+          });
+
+          await this.syncStore.insertLogFilterIntervalBatch({
+            chainId: logFilter.chainId,
+            logFilter: logFilter.criteria,
+            data: dataBatch,
+            interval: {
+              startBlock: BigInt(firstBlockNumber),
+              endBlock: BigInt(lastBlockNumber),
+            },
+          });
+          dataBatch.length = 0; // Clear the batch
+        }
+      }
+
+      // Insert any remaining data
+      if (dataBatch.length > 0) {
+        // Log block numbers of first and last items in the batch
+        const firstBlockNumber = dataBatch[0].blockNumber;
+        const lastBlockNumber = dataBatch[dataBatch.length - 1].blockNumber;
+        this.common.logger.info({
+          service: "historical",
+          msg: `Inserting final batch with first block number: ${firstBlockNumber}, last block number: ${lastBlockNumber}`,
+        });
+
+        await this.syncStore.insertLogFilterIntervalBatch({
+          chainId: logFilter.chainId,
+          logFilter: logFilter.criteria,
+          data: dataBatch,
+          interval: {
+            startBlock: BigInt(firstBlockNumber),
+            endBlock: BigInt(lastBlockNumber),
+          },
+        });
+      }
+
+      // Delete the file after processing
+      fs.unlinkSync(localPath);
     }
+
     this.common.metrics.ponder_historical_completed_blocks.inc(
       {
         network: this.network.name,
