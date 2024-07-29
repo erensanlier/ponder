@@ -5,20 +5,28 @@ import { queries } from "./rpc-tables/index.js";
 
 const TEMP_FUNCTIONS = [
   `
-    CREATE TEMP FUNCTION tobase16_int64(x INT64)
-  RETURNS STRING
-  LANGUAGE js AS """
-    if (x === null) return null;
-    return '0x' + Number(x).toString(16);
-  """;
-  `,
-  `
-  CREATE TEMP FUNCTION tobase16_bignumeric(x BIGNUMERIC)
-  RETURNS STRING
-  LANGUAGE js AS """
+    CREATE TEMP FUNCTION tobase16_string(x STRING)
+    RETURNS STRING
+    LANGUAGE js AS """
     if (x === null) return null;
     return '0x' + BigInt(x).toString(16);
-  """;
+    """;
+  `,
+  `
+    CREATE TEMP FUNCTION tobase16_int64(x INT64)
+    RETURNS STRING
+    LANGUAGE js AS """
+    if (x === null) return null;
+    return '0x' + Number(x).toString(16);
+    """;
+  `,
+  `
+    CREATE TEMP FUNCTION tobase16_bignumeric(x BIGNUMERIC)
+    RETURNS STRING
+    LANGUAGE js AS """
+    if (x === null) return null;
+    return '0x' + BigInt(x).toString(16);
+    """;
   `,
 ];
 
