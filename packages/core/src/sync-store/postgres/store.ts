@@ -176,6 +176,7 @@ export class PostgresSyncStore implements SyncStore {
     })[];
     interval: { startBlock: bigint; endBlock: bigint };
   }) => {
+    const CHUNK_SIZE = 1000;
     return this.db.wrap(
       { method: "insertLogFilterIntervalBatch" },
       async () => {
@@ -208,38 +209,54 @@ export class PostgresSyncStore implements SyncStore {
             })),
           );
 
-          await tx
-            .insertInto("blocks")
-            .values(blocks)
-            .onConflict((oc) => oc.column("hash").doNothing())
-            .execute();
-
-          if (transactions.length > 0) {
+          // Insert blocks in chunks
+          for (let i = 0; i < blocks.length; i += CHUNK_SIZE) {
+            const chunk = blocks.slice(i, i + CHUNK_SIZE);
             await tx
-              .insertInto("transactions")
-              .values(transactions)
+              .insertInto("blocks")
+              .values(chunk)
               .onConflict((oc) => oc.column("hash").doNothing())
               .execute();
           }
 
-          if (transactionReceipts.length > 0) {
-            await tx
-              .insertInto("transactionReceipts")
-              .values(transactionReceipts)
-              .onConflict((oc) => oc.column("transactionHash").doNothing())
-              .execute();
+          // Insert transactions in chunks
+          if (transactions.length > 0) {
+            for (let i = 0; i < transactions.length; i += CHUNK_SIZE) {
+              const chunk = transactions.slice(i, i + CHUNK_SIZE);
+              await tx
+                .insertInto("transactions")
+                .values(chunk)
+                .onConflict((oc) => oc.column("hash").doNothing())
+                .execute();
+            }
           }
 
+          // Insert transaction receipts in chunks
+          if (transactionReceipts.length > 0) {
+            for (let i = 0; i < transactionReceipts.length; i += CHUNK_SIZE) {
+              const chunk = transactionReceipts.slice(i, i + CHUNK_SIZE);
+              await tx
+                .insertInto("transactionReceipts")
+                .values(chunk)
+                .onConflict((oc) => oc.column("transactionHash").doNothing())
+                .execute();
+            }
+          }
+
+          // Insert logs in chunks
           if (logs.length > 0) {
-            await tx
-              .insertInto("logs")
-              .values(logs)
-              .onConflict((oc) =>
-                oc.column("id").doUpdateSet((eb) => ({
-                  checkpoint: eb.ref("excluded.checkpoint"),
-                })),
-              )
-              .execute();
+            for (let i = 0; i < logs.length; i += CHUNK_SIZE) {
+              const chunk = logs.slice(i, i + CHUNK_SIZE);
+              await tx
+                .insertInto("logs")
+                .values(chunk)
+                .onConflict((oc) =>
+                  oc.column("id").doUpdateSet((eb) => ({
+                    checkpoint: eb.ref("excluded.checkpoint"),
+                  })),
+                )
+                .execute();
+            }
           }
 
           await this._insertLogFilterInterval({
