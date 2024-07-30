@@ -1168,6 +1168,9 @@ export class HistoricalSyncService extends Emittery<HistoricalSyncEvents> {
     }
     const files = await this.bigQueryService!.listFilesInDirectory(directory);
 
+    let minBlockNumber: bigint | null = null;
+    let maxBlockNumber: bigint | null = null;
+
     for (const file of files) {
       const localPath = `${this.common.options.ponderDir}/tmp/${file}`;
       await this.bigQueryService!.downloadFileFromGCS(file, localPath);
@@ -1180,6 +1183,14 @@ export class HistoricalSyncService extends Emittery<HistoricalSyncEvents> {
       for await (const line of rl) {
         const data = JSON.parse(line);
         dataBatch.push(data);
+
+        const blockNumber = BigInt(data.number);
+        if (minBlockNumber === null || blockNumber < minBlockNumber) {
+          minBlockNumber = blockNumber;
+        }
+        if (maxBlockNumber === null || blockNumber > maxBlockNumber) {
+          maxBlockNumber = blockNumber;
+        }
 
         // Insert in batches to optimize memory usage
         if (dataBatch.length >= 1000) {
@@ -1195,10 +1206,7 @@ export class HistoricalSyncService extends Emittery<HistoricalSyncEvents> {
             chainId: logFilter.chainId,
             logFilter: logFilter.criteria,
             data: dataBatch,
-            interval: {
-              startBlock: BigInt(firstBlockNumber),
-              endBlock: BigInt(lastBlockNumber),
-            },
+            interval: undefined,
           });
           dataBatch.length = 0; // Clear the batch
         }
@@ -1218,16 +1226,29 @@ export class HistoricalSyncService extends Emittery<HistoricalSyncEvents> {
           chainId: logFilter.chainId,
           logFilter: logFilter.criteria,
           data: dataBatch,
-          interval: {
-            startBlock: BigInt(firstBlockNumber),
-            endBlock: BigInt(lastBlockNumber),
-          },
+          interval: undefined,
         });
       }
 
       // Delete the file after processing
       fs.unlinkSync(localPath);
     }
+
+    if (minBlockNumber === null || maxBlockNumber === null) {
+      throw new Error(
+        `Failed to export '${this.network.name}' logs for '${logFilter.contractName}' from block ${fromBlock} to ${toBlock}`,
+      );
+    }
+
+    await this.syncStore.insertLogFilterIntervalBatch({
+      chainId: logFilter.chainId,
+      logFilter: logFilter.criteria,
+      data: [],
+      interval: {
+        startBlock: BigInt(minBlockNumber),
+        endBlock: BigInt(maxBlockNumber),
+      },
+    });
 
     this.common.metrics.ponder_historical_completed_blocks.inc(
       {

@@ -183,7 +183,7 @@ export class SqliteSyncStore implements SyncStore {
       transactionReceipts: SyncTransactionReceipt[];
       logs: SyncLog[];
     })[];
-    interval: { startBlock: bigint; endBlock: bigint };
+    interval: { startBlock: bigint; endBlock: bigint } | undefined;
   }) => {
     const CHUNK_SIZE = 1000;
     return this.db.wrap(
@@ -268,12 +268,14 @@ export class SqliteSyncStore implements SyncStore {
             }
           }
 
-          await this._insertLogFilterInterval({
-            tx,
-            chainId,
-            logFilters: [logFilter],
-            interval,
-          });
+          if (interval !== undefined) {
+            await this._insertLogFilterInterval({
+              tx,
+              chainId,
+              logFilters: [logFilter],
+              interval,
+            });
+          }
         });
       },
     );

@@ -72,7 +72,7 @@ export interface SyncStore {
       transactionReceipts: SyncTransactionReceipt[];
       logs: SyncLog[];
     })[];
-    interval: { startBlock: bigint; endBlock: bigint };
+    interval: { startBlock: bigint; endBlock: bigint } | undefined;
   }): Promise<void>;
 
   /**
